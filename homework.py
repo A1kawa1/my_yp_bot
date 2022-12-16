@@ -1,10 +1,12 @@
-import telegram
-from telegram.ext import Updater, MessageHandler, CommandHandler, Filters
 import time
-from dotenv import load_dotenv
 import logging
 import requests
 import os
+import sys
+from http import HTTPStatus
+import telegram
+from telegram.ext import Updater, MessageHandler, CommandHandler, Filters
+from dotenv import load_dotenv
 
 
 load_dotenv()
@@ -34,11 +36,10 @@ logging.basicConfig(
 
 def check_tokens():
     """проверка наличия всех необходимых переменных окружения."""
-    if ((PRACTICUM_TOKEN is None)
-            or (TELEGRAM_TOKEN is None)
-            or (TELEGRAM_CHAT_ID is None)):
-        logging.critical('Нет обязательных переменных окружения')
-        exit(0)
+    if all([PRACTICUM_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID]):
+        return True
+    logging.critical('Нет обязательных переменных окружения')
+    return False
 
 
 def send_message(bot, message):
@@ -62,36 +63,47 @@ def get_api_answer(timestamp=0):
             headers=HEADERS,
             params=PAYLOAD
         )
-    except requests.RequestException:
-        logging.error('ошибка запроса')
-    if responce.status_code == 200:
+    except requests.RequestException as exception:
+        raise exception('API временно не доступно')
+    if responce.status_code == HTTPStatus.OK:
         return responce.json()
-    else:
-        logging.error('API временно не доступно')
-        raise Exception
+    raise requests.RequestException(
+        f'{ENDPOINT} - {HEADERS} - {PAYLOAD} - {responce.status_code}'
+    )
 
 
 def check_response(response):
     """проверка ответа от API Яндекс.Домашка на валидность."""
-    if type(response) != dict:
-        logging.error('неверный ответ от Яндекс.Домашка')
-        raise TypeError
+    if not isinstance(response, dict):
+        raise TypeError(
+            'неверный формат ответа - в ответе не словарь'
+        )
     if response.get('homeworks') is None:
-        logging.error('неверный ответ от Яндекс.Домашка')
-        raise KeyError
-    if type(response.get('homeworks')) != list:
-        logging.error('неверный ответ от Яндекс.Домашка')
-        raise TypeError
+        raise KeyError('отсутствует ключ homeworks')
+    if not isinstance(response.get('homeworks'), list):
+        raise TypeError(
+            'неверный формат ответа - список дз это не список'
+        )
 
 
 def parse_status(homework):
     """получение статуса проекта."""
-    homework_name = homework.get('homework_name')
-    status = homework.get('status')
-    if (status not in HOMEWORK_VERDICTS.keys()) or (homework_name is None):
-        logging.error('неверный ответ от Яндекс.Домашка')
-        raise KeyError
-    verdict = HOMEWORK_VERDICTS.get(status)
+    if not isinstance(homework, dict):
+        raise TypeError(
+            'неверный формат ответа - полученное дз это не словарь'
+        )
+
+    if homework.get('homework_name') is None:
+        raise KeyError('отсутствует ключ homework_name')
+    homework_name = homework['homework_name']
+
+    if homework.get('status') is None:
+        raise KeyError('отсутствует ключ status')
+    status = homework['status']
+
+    if HOMEWORK_VERDICTS.get(status) is None:
+        raise KeyError('некоректный status')
+    verdict = HOMEWORK_VERDICTS[status]
     return f'Изменился статус проверки работы "{homework_name}". {verdict}'
 
 
@@ -114,6 +126,8 @@ def get_date(update, context):
 
 stopp = False
 def main_loop(context, timestamp):
+    if not check_tokens():
+        sys.exit('отсутствуют необходимые переменный окружения')
     global stopp
     stopp = False
     previous_status = 0
